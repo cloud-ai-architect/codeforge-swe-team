@@ -28,11 +28,8 @@ locals {
 # --- OIDC + IAM ---
 
 module "oidc" {
-  source      = "./modules/oidc"
-  oidc_url    = local.github_oidc_url
-  client_id   = local.github_aud
-  thumbprint  = local.github_thumbprint
-  common_tags = local.common_tags
+  source = "./modules/oidc"
+  arn    = local.github_oidc_arn
 }
 
 module "iam" {
