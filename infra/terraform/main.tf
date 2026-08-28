@@ -23,8 +23,9 @@ locals {
     search       = "${local.name_prefix}-search"
     feedback     = "${local.name_prefix}-feedback"
   }
-}
+  github_oidc_arn = "arn:aws:iam::761554981898:oidc-provider/token.actions.githubusercontent.com"
 
+}
 # --- OIDC + IAM ---
 
 module "oidc" {
