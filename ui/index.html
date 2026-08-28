@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeForge — Task Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>🔨 CodeForge — Task Dashboard</h1>
+    <p class="env-badge" id="env-badge">dev</p>
+  </header>
+
+  <main class="app-main">
+    <section class="stats-section">
+      <h2>Active Tasks</h2>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <span class="stat-label">Total</span>
+          <span class="stat-value" id="stat-total">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Running</span>
+          <span class="stat-value" id="stat-running">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Succeeded (24h)</span>
+          <span class="stat-value" id="stat-succeeded">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Failed (24h)</span>
+          <span class="stat-value" id="stat-failed">—</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="tasks-section">
+      <h2>Recent Tasks</h2>
+      <div id="tasks" class="tasks">
+        <p class="empty">Loading...</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
