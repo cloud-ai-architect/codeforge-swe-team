@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from src.agents.codeforge import _render_files
-from src.sandbox import SandboxError, SandboxNotConfiguredError, is_configured, run
+from src.sandbox import SandboxError, SandboxNotConfiguredError, run
 
 
 class TestConfiguration:
@@ -19,11 +19,13 @@ class TestConfiguration:
         """The module reads env at import, so this asserts the accessor
         rather than re-importing."""
         import src.sandbox as sandbox
+
         monkeypatch.setattr(sandbox, "CLUSTER", "")
         assert not sandbox.is_configured()
 
     def test_reports_configured_when_all_present(self, monkeypatch):
         import src.sandbox as sandbox
+
         monkeypatch.setattr(sandbox, "CLUSTER", "c")
         monkeypatch.setattr(sandbox, "TASK_DEFINITION", "t")
         monkeypatch.setattr(sandbox, "SUBNETS", ["subnet-1"])
@@ -31,6 +33,7 @@ class TestConfiguration:
 
     def test_partial_configuration_is_not_configured(self, monkeypatch):
         import src.sandbox as sandbox
+
         monkeypatch.setattr(sandbox, "CLUSTER", "c")
         monkeypatch.setattr(sandbox, "TASK_DEFINITION", "")
         assert not sandbox.is_configured()
@@ -45,6 +48,7 @@ class TestRunValidation:
         """Callers map this to 503 rather than 500: an unprovisioned
         sandbox is a deployment state, not a failure."""
         import src.sandbox as sandbox
+
         monkeypatch.setattr(sandbox, "CLUSTER", "")
         with pytest.raises(SandboxNotConfiguredError):
             sandbox.run("print(1)")
