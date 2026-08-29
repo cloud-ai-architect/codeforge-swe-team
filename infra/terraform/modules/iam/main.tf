@@ -159,6 +159,12 @@ data "aws_iam_policy_document" "github_actions_inline" {
       "tag:TagResources",
       "tag:UntagResources",
       "sts:GetCallerIdentity",
+      # The execution sandbox: VPC and networking, ECS, and ECR for the
+      # pull-through cache. Only this project provisions them.
+      "ec2:*",
+      "ecs:*",
+      "ecr:*",
+      "elasticloadbalancing:Describe*",
     ]
 
     resources = ["*"]
