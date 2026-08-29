@@ -1,1 +1,1 @@
-"""CodeForge agents — the multi-agent SWE team."""
+"""CodeForge agents."""

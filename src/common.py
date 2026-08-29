@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -11,147 +13,146 @@ import structlog
 
 logger = structlog.get_logger()
 
+REGION = os.environ.get("AWS_REGION", "ap-south-1")
 
-@dataclass
+# Model tiers, cheapest first. Selection is by task complexity, not habit:
+# routing and extraction do not need a frontier model, and on a portfolio
+# budget the difference is roughly an order of magnitude per million tokens.
+#
+# Anthropic models are not enabled on this account (Bedrock requires a
+# one-time use-case submission), so the defaults are Amazon Nova. Because
+# everything below goes through the Converse API, switching provider is a
+# change of model id -- no code change.
+MODEL_FAST = os.environ.get("MODEL_FAST", "apac.amazon.nova-micro-v1:0")
+MODEL_STANDARD = os.environ.get("MODEL_STANDARD", "apac.amazon.nova-lite-v1:0")
+MODEL_DEEP = os.environ.get("MODEL_DEEP", "apac.amazon.nova-pro-v1:0")
+
+
 class CodeForgeError(Exception):
-    """Base exception."""
-    message: str
-    context: dict[str, Any] = field(default_factory=dict)
+    """Base error for CodeForge."""
+
+
+class ModelError(CodeForgeError):
+    """The model call failed or returned an unusable response."""
 
 
 @dataclass
-class SandboxError(CodeForgeError):
-    """Sandbox execution failed."""
-
-
-@dataclass
-class GitHubError(CodeForgeError):
-    """GitHub API call failed."""
-
-
-@dataclass
-class AgentError(CodeForgeError):
-    """Agent failed to produce output."""
-
-
-@dataclass
-class CodeTask:
+class CodeforgeTask:
     """A unit of work for the CodeForge pipeline."""
 
     task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    issue_url: str = ""
-    repo_full_name: str = ""
-    issue_number: int = 0
-    issue_title: str = ""
-    issue_body: str = ""
-    plan: str = ""
-    current_attempt: int = 0
-    max_attempts: int = 3
-    status: str = "pending"  # pending | planning | coding | testing | reviewing | pr_open | ci_running | ci_failed | done | failed
-    artifacts: dict[str, Any] = field(default_factory=dict)  # patch_url, test_output, pr_url, etc.
     started_at: float = 0.0
     completed_at: float = 0.0
-    cumulative_cost_usd: float = 0.0
+    status: str = "pending"  # pending | in_progress | done | failed
+    artifacts: dict[str, Any] = field(default_factory=dict)
 
 
 class BaseAgent:
-    """Base class for all CodeForge agents."""
+    """Base class for all CodeForge agents.
+
+    Subclasses set NAME, MODEL and SYSTEM_PROMPT, then implement handle().
+    """
 
     NAME: ClassVar[str] = ""
+    MODEL: ClassVar[str] = MODEL_STANDARD
+    SYSTEM_PROMPT: ClassVar[str] = ""
 
     def __init__(self) -> None:
         if not self.NAME:
             raise ValueError(f"{type(self).__name__} must set NAME")
         self.log = logger.bind(agent=self.NAME)
-        self.bedrock = None
-        self.s3 = None
-        self.dynamodb = None
+        self.bedrock: Any = None
         self._setup_done = False
 
     def setup(self) -> None:
-        pass
+        """Override for agent-specific initialisation."""
 
     def ensure_setup(self) -> None:
         if self._setup_done:
             return
         import boto3
-        self.bedrock = boto3.client("bedrock-runtime", region_name="ap-south-1")
-        self.s3 = boto3.client("s3", region_name="ap-south-1")
-        self.dynamodb = boto3.client("dynamodb", region_name="ap-south-1")
+
+        self.bedrock = boto3.client("bedrock-runtime", region_name=REGION)
         self.setup()
         self._setup_done = True
 
-    def invoke_claude(
+    def invoke(
         self,
-        system: str,
-        messages: list[dict[str, Any]],
-        model: str = "anthropic.claude-sonnet-4-5-20250929-v1:0",
-        max_tokens: int = 4096,
+        prompt: str,
+        system: str | None = None,
+        model: str | None = None,
+        max_tokens: int = 2048,
+        temperature: float = 0.2,
     ) -> str:
+        """Call a foundation model and return its text.
+
+        Uses the Converse API rather than InvokeModel: it normalises the
+        request/response shape across providers, so the same code runs on
+        Nova, Claude, Llama or Mistral.
+        """
         self.ensure_setup()
-        import json
-        response = self.bedrock.invoke_model(
-            modelId=model,
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": max_tokens,
-                "system": system,
-                "messages": messages,
-            }),
-        )
-        return json.loads(response["body"].read())["content"][0]["text"]
+        model_id = model or self.MODEL
+        system_prompt = system if system is not None else self.SYSTEM_PROMPT
 
-    def reflect(self, task: CodeTask, error: str) -> str:
-        """Self-reflection after a failure: why did this fail, what to try next."""
-        prompt = f"""You are a coding agent. A previous attempt failed.
+        kwargs: dict[str, Any] = {
+            "modelId": model_id,
+            "messages": [{"role": "user", "content": [{"text": prompt}]}],
+            "inferenceConfig": {"maxTokens": max_tokens, "temperature": temperature},
+        }
+        if system_prompt:
+            kwargs["system"] = [{"text": system_prompt}]
 
-Task: {task.issue_title}
-Description: {task.issue_body}
-Previous attempt: attempt #{task.current_attempt}
-Error: {error}
-
-Reflect:
-1. WHY did this fail? (be specific)
-2. What is the most likely root cause?
-3. What would you try DIFFERENTLY next time?
-
-Respond concisely."""
-        return self.invoke_claude(
-            system="You are an expert software engineer. Be specific and analytical.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-    def run(self, task: CodeTask) -> CodeTask:
-        """Main entry point. Subclasses implement handle()."""
-        self.ensure_setup()
         start = time.perf_counter()
         try:
-            task.status = self.NAME
-            task.current_attempt += 1
-            self.log.info("agent.start", task_id=task.task_id, attempt=task.current_attempt)
-            result = self.handle(task)
-            task.completed_at = time.perf_counter()
-            self.log.info("agent.success", task_id=task.task_id, duration_ms=int((task.completed_at - start) * 1000))
-            return result
+            response = self.bedrock.converse(**kwargs)
         except Exception as exc:
-            task.completed_at = time.perf_counter()
-            self.log.error("agent.error", task_id=task.task_id, error=str(exc))
-            task.artifacts["last_error"] = str(exc)
-            task.artifacts["last_reflection"] = self.reflect(task, str(exc))
-            task.status = f"{self.NAME}_failed"
-            raise
+            raise ModelError(f"{self.NAME}: model call failed ({model_id}): {exc}") from exc
 
-    def handle(self, task: CodeTask) -> CodeTask:  # noqa: ARG002
+        try:
+            text = response["output"]["message"]["content"][0]["text"]
+        except (KeyError, IndexError) as exc:
+            raise ModelError(f"{self.NAME}: unexpected response shape from {model_id}") from exc
+
+        usage = response.get("usage", {})
+        self.log.info(
+            "model.invoke",
+            model=model_id,
+            input_tokens=usage.get("inputTokens"),
+            output_tokens=usage.get("outputTokens"),
+            duration_ms=int((time.perf_counter() - start) * 1000),
+        )
+        return text
+
+    def invoke_json(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
+        """Call the model and parse its reply as JSON.
+
+        Models often wrap JSON in prose or a fenced block, so the outermost
+        braces are extracted before parsing rather than trusting the reply
+        to be bare JSON.
+        """
+        raw = self.invoke(prompt, **kwargs)
+        start, end = raw.find("{"), raw.rfind("}")
+        if start == -1 or end == -1 or end < start:
+            raise ModelError(f"{self.NAME}: no JSON object in model reply: {raw[:200]}")
+        try:
+            return json.loads(raw[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise ModelError(f"{self.NAME}: malformed JSON from model: {exc}") from exc
+
+    def run(self, *args: Any, **kwargs: Any) -> Any:
+        self.ensure_setup()
+        return self.handle(*args, **kwargs)
+
+    def handle(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ARG002
         raise NotImplementedError
 
 
 __all__ = [
-    "AgentError",
     "BaseAgent",
     "CodeForgeError",
-    "CodeTask",
-    "GitHubError",
-    "SandboxError",
+    "CodeforgeTask",
+    "ModelError",
+    "MODEL_DEEP",
+    "MODEL_FAST",
+    "MODEL_STANDARD",
 ]

@@ -17,10 +17,10 @@ locals {
 
   lambdas = {
     orchestrator = "${local.name_prefix}-orchestrator"
-    sales        = "${local.name_prefix}-sales"
-    support      = "${local.name_prefix}-support"
-    returns      = "${local.name_prefix}-returns"
-    search       = "${local.name_prefix}-search"
+    planner      = "${local.name_prefix}-planner"
+    coder        = "${local.name_prefix}-coder"
+    reviewer     = "${local.name_prefix}-reviewer"
+    sandbox      = "${local.name_prefix}-sandbox"
     feedback     = "${local.name_prefix}-feedback"
   }
   github_oidc_arn = "arn:aws:iam::761554981898:oidc-provider/token.actions.githubusercontent.com"
@@ -41,8 +41,21 @@ module "iam" {
   name_prefix       = local.name_prefix
   github_org        = var.github_org
   github_repo       = var.github_repo
-  github_sub_main   = local.github_sub_main
-  github_sub_pr     = local.github_sub_pr
+  github_subs = [
+
+    local.github_sub_main,
+
+    local.github_sub_pr,
+
+    local.github_sub_env,
+
+    local.github_sub_main_plain,
+
+    local.github_sub_pr_plain,
+
+    local.github_sub_env_plain,
+
+  ]
   github_aud        = local.github_aud
   github_thumbprint = local.github_thumbprint
   buckets           = local.buckets
@@ -76,9 +89,13 @@ module "vectors_bucket" {
 module "ui_bucket" {
   source = "./modules/s3-bucket"
 
-  bucket_name  = local.buckets.ui
-  common_tags  = local.common_tags
-  allow_public = true
+  bucket_name = local.buckets.ui
+  common_tags = local.common_tags
+
+  # Private. CloudFront reads it through Origin Access Control, using the
+  # bucket policy defined in the cloudfront module. Public access here would
+  # let anyone fetch objects straight from S3 and bypass the distribution.
+  allow_public = false
 }
 
 module "orders_dynamodb" {
@@ -123,6 +140,17 @@ module "lambdas" {
   api_role_arns       = module.iam.api_role_arns
   log_retention_days  = var.log_retention_days
   common_tags         = local.common_tags
+
+  # Wiring for the Fargate sandbox. Only the sandbox stage uses these, but
+  # the module applies one environment map to every function.
+  extra_env = {
+    SANDBOX_CLUSTER         = module.sandbox.cluster_name
+    SANDBOX_TASK_DEFINITION = module.sandbox.task_definition
+    SANDBOX_SUBNETS         = join(",", module.sandbox.subnet_ids)
+    SANDBOX_SECURITY_GROUPS = module.sandbox.security_group_id
+    SANDBOX_LOG_GROUP       = module.sandbox.log_group
+    SANDBOX_MAX_WAIT        = "240"
+  }
 }
 
 module "step_function" {
@@ -149,9 +177,20 @@ module "apigateway" {
   source = "./modules/apigateway"
 
   name_prefix     = local.name_prefix
-  search_lambda   = module.lambdas.function_arns["search"]
-  feedback_lambda = module.lambdas.function_arns["feedback"]
-  common_tags     = local.common_tags
+  api_description = "CodeForge software engineering agent API"
+
+  # One route per agent; the orchestrator is reachable too, which it
+  # previously was not.
+  routes = {
+    assist       = module.lambdas.function_arns["orchestrator"]
+    plan         = module.lambdas.function_arns["planner"]
+    code         = module.lambdas.function_arns["coder"]
+    review       = module.lambdas.function_arns["reviewer"]
+    run          = module.lambdas.function_arns["sandbox"]
+    feedback     = module.lambdas.function_arns["feedback"]
+  }
+
+  common_tags = local.common_tags
 }
 
 module "cloudfront" {
@@ -171,5 +210,77 @@ module "resource_group" {
 
   name_prefix = local.name_prefix
   environment = var.environment
+  common_tags = local.common_tags
+}
+
+###############################################################################
+# Static site upload.
+#
+# The UI was previously copied into the bucket by hand, which meant the
+# deployed site could drift from the repo and a fresh account had no UI at
+# all. Terraform now owns it.
+#
+# config.js is generated rather than committed: app.js reads
+# window.CODEFORGE_API_URL and fell back to "https://api.example.com",
+# so every search failed with "Failed to fetch". Generating it here keeps
+# the endpoint out of the source tree and correct per environment.
+###############################################################################
+
+locals {
+  ui_content_types = {
+    ".html" = "text/html"
+    ".css"  = "text/css"
+    ".js"   = "application/javascript"
+    ".json" = "application/json"
+    ".svg"  = "image/svg+xml"
+    ".ico"  = "image/x-icon"
+  }
+
+  ui_files = fileset("${path.module}/../../ui", "**/*.{html,css,js,json,svg,ico}")
+}
+
+resource "aws_s3_object" "ui" {
+  for_each = local.ui_files
+
+  bucket = local.buckets.ui
+  key    = "static/${each.value}"
+  source = "${path.module}/../../ui/${each.value}"
+  etag   = filemd5("${path.module}/../../ui/${each.value}")
+
+  content_type = lookup(
+    local.ui_content_types,
+    regex("\\.[^.]+$", each.value),
+    "application/octet-stream",
+  )
+
+  tags = local.common_tags
+}
+
+resource "aws_s3_object" "ui_config" {
+  bucket       = local.buckets.ui
+  key          = "static/config.js"
+  content_type = "application/javascript"
+
+  content = <<-JS
+    // Generated by Terraform. Do not edit; changes will be overwritten.
+    window.CODEFORGE_API_URL = "${module.apigateway.api_url}";
+    window.CODEFORGE_ENV = "${var.environment}";
+  JS
+
+  etag = md5("${module.apigateway.api_url}${var.environment}")
+  tags = local.common_tags
+}
+
+###############################################################################
+# Sandbox: isolated execution for model-authored code.
+#
+# The one component that is not a Lambda. See modules/sandbox for why.
+###############################################################################
+
+module "sandbox" {
+  source = "./modules/sandbox"
+
+  name_prefix = local.name_prefix
+  enabled     = var.sandbox_enabled
   common_tags = local.common_tags
 }

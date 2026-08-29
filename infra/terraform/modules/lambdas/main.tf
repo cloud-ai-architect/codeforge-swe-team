@@ -34,6 +34,11 @@ variable "log_retention_days" {
   type = number
   default = 30
 }
+variable "extra_env" {
+  type    = map(string)
+  default = {}
+}
+
 variable "common_tags" {
   type = map(string)
   default = {}
@@ -56,10 +61,10 @@ locals {
 
   stage_lambdas = {
     orchestrator = "src.lambdas.orchestrator_handler.handler"
-    sales        = "src.lambdas.sales_handler.handler"
-    support      = "src.lambdas.support_handler.handler"
-    returns      = "src.lambdas.returns_handler.handler"
-    search       = "src.lambdas.search_handler.handler"
+    planner      = "src.lambdas.planner_handler.handler"
+    coder        = "src.lambdas.coder_handler.handler"
+    reviewer     = "src.lambdas.reviewer_handler.handler"
+    sandbox      = "src.lambdas.sandbox_handler.handler"
     feedback     = "src.lambdas.feedback_handler.handler"
   }
 }
@@ -91,13 +96,21 @@ resource "aws_lambda_function" "this" {
   source_code_hash = data.archive_file.placeholder.output_base64sha256
 
   environment {
-    variables = local.common_env
+    variables = merge(local.common_env, var.extra_env)
   }
 
   tags = var.common_tags
 
   tracing_config {
     mode = "Active"
+  }
+
+  # Terraform provisions the function; application code is delivered by
+  # scripts/package_lambdas.py via update-function-code. Without this, every
+  # apply reverts the live code to the 248-byte placeholder stub -- which is
+  # exactly what happened when the API routes were rewired.
+  lifecycle {
+    ignore_changes = [filename, source_code_hash]
   }
 }
 

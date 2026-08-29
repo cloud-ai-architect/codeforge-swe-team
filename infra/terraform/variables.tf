@@ -101,3 +101,9 @@ variable "monthly_budget_usd" {
   type        = number
   default     = 50
 }
+
+variable "sandbox_enabled" {
+  description = "Provision the Fargate execution sandbox. Off by default: the three interface VPC endpoints it needs cost roughly $21/month, and nothing else in this stack costs anything when idle."
+  type        = bool
+  default     = false
+}
