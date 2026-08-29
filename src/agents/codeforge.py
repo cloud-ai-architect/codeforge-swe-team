@@ -49,7 +49,7 @@ class PlannerAgent(BaseAgent):
     )
 
     def handle(self, issue: str, files: dict[str, str] | None = None) -> dict[str, Any]:
-        prompt = "Issue:\n%s\n" % issue
+        prompt = f"Issue:\n{issue}\n"
         if files:
             prompt += "\nRepository files:\n" + _render_files(files)
         return self.invoke_json(prompt, max_tokens=3000)
@@ -83,9 +83,9 @@ class CoderAgent(BaseAgent):
     ) -> dict[str, Any]:
         import json
 
-        prompt = "Task:\n%s\n" % task
+        prompt = f"Task:\n{task}\n"
         if plan:
-            prompt += "\nPlan:\n%s\n" % json.dumps(plan, indent=1)[:2500]
+            prompt += f"\nPlan:\n{json.dumps(plan, indent=1)[:2500]}\n"
         if files:
             prompt += "\nRepository files:\n" + _render_files(files)
         return self.invoke_json(prompt, max_tokens=4000)
@@ -113,9 +113,9 @@ class ReviewerAgent(BaseAgent):
     )
 
     def handle(self, diff: str, context: str = "") -> dict[str, Any]:
-        prompt = "Diff under review:\n%s\n" % diff
+        prompt = f"Diff under review:\n{diff}\n"
         if context:
-            prompt += "\nContext:\n%s" % context
+            prompt += f"\nContext:\n{context}"
         return self.invoke_json(prompt, max_tokens=3000)
 
 
@@ -138,7 +138,7 @@ class OrchestratorAgent(BaseAgent):
     VALID = {"planner", "coder", "reviewer", "sandbox"}
 
     def handle(self, request: str) -> dict[str, Any]:
-        result = self.invoke_json("Request:\n%s" % request)
+        result = self.invoke_json(f"Request:\n{request}")
         if result.get("agent") not in self.VALID:
             # Planner is the safe default: it is the only agent that produces
             # something useful without a diff or code already in hand.
@@ -154,7 +154,7 @@ def _render_files(files: dict[str, str], limit: int = 6000) -> str:
     parts = []
     for name, body in files.items():
         text = body if len(body) <= limit else body[:limit] + "\n... (truncated)"
-        parts.append("--- %s ---\n%s" % (name, text))
+        parts.append(f"--- {name} ---\n{text}")
     return "\n\n".join(parts)
 
 

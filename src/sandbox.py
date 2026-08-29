@@ -52,7 +52,7 @@ class SandboxError(Exception):
     """The sandbox could not be started, or did not return a usable result."""
 
 
-class SandboxNotConfigured(SandboxError):
+class SandboxNotConfiguredError(SandboxError):
     """Sandbox environment variables are absent."""
 
 
@@ -67,9 +67,9 @@ def run(code: str, language: str = "python", timeout: int | None = None) -> dict
     than written to a shared volume, so nothing is persisted between runs.
     """
     if language != "python":
-        raise SandboxError("unsupported language: %s" % language)
+        raise SandboxError(f"unsupported language: {language}")
     if not is_configured():
-        raise SandboxNotConfigured(
+        raise SandboxNotConfiguredError(
             "sandbox is not configured; set SANDBOX_CLUSTER, "
             "SANDBOX_TASK_DEFINITION and SANDBOX_SUBNETS"
         )
@@ -109,7 +109,7 @@ def run(code: str, language: str = "python", timeout: int | None = None) -> dict
 
     failures = started.get("failures") or []
     if failures:
-        raise SandboxError("could not start sandbox task: %s" % json.dumps(failures))
+        raise SandboxError(f"could not start sandbox task: {json.dumps(failures)}")
 
     task_arn = started["tasks"][0]["taskArn"]
     task_id = task_arn.rsplit("/", 1)[-1]
@@ -133,7 +133,7 @@ def run(code: str, language: str = "python", timeout: int | None = None) -> dict
     }
 
 
-def _wait(ecs, task_arn: str, deadline: float) -> tuple[int | None, str]:
+def _wait(ecs: Any, task_arn: str, deadline: float) -> tuple[int | None, str]:
     """Poll until the task stops or the deadline passes."""
     while time.time() < deadline:
         desc = ecs.describe_tasks(cluster=CLUSTER, tasks=[task_arn])
@@ -150,15 +150,15 @@ def _wait(ecs, task_arn: str, deadline: float) -> tuple[int | None, str]:
     # Deadline hit: stop the task so it cannot keep running unattended.
     try:
         ecs.stop_task(cluster=CLUSTER, task=task_arn, reason="caller timeout")
-    except Exception:  # noqa: BLE001 - best effort; the result is already a timeout
-        pass
-    return None, "timed out after %ds" % MAX_WAIT_SECONDS
+    except Exception as exc:  # noqa: BLE001 - best effort; result is already a timeout
+        print(f"could not stop timed-out sandbox task: {exc!r}")
+    return None, f"timed out after {MAX_WAIT_SECONDS}s"
 
 
 def _fetch_logs(task_id: str) -> list[str]:
     """Read the task's stdout from CloudWatch Logs."""
     client = boto3.client("logs", region_name=REGION)
-    stream = "sandbox/runner/%s" % task_id
+    stream = f"sandbox/runner/{task_id}"
     try:
         resp = client.get_log_events(
             logGroupName=LOG_GROUP,
@@ -173,4 +173,4 @@ def _fetch_logs(task_id: str) -> list[str]:
     return [e["message"] for e in resp.get("events", [])]
 
 
-__all__ = ["SandboxError", "SandboxNotConfigured", "is_configured", "run"]
+__all__ = ["SandboxError", "SandboxNotConfiguredError", "is_configured", "run"]

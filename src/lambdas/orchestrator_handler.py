@@ -5,17 +5,22 @@ Routes a free-text engineering request to a specialist and runs it.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from src.agents.codeforge import AGENTS, OrchestratorAgent
 from src.lambdas._base import run_stage
 
-DISPATCH = {
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+DISPATCH: dict[str, Callable[[dict[str, Any]], tuple[Any, ...]]] = {
     "planner": lambda d: (d.get("issue") or d["request"], d.get("files")),
     "coder": lambda d: (d.get("task") or d["request"], d.get("files"), d.get("plan")),
     "reviewer": lambda d: (d.get("diff") or d["request"], d.get("context", "")),
 }
 
 
-def _route_and_run(data: dict) -> dict:
+def _route_and_run(data: dict[str, Any]) -> dict[str, Any]:
     decision = OrchestratorAgent().run(data["request"])
     name = decision["agent"]
 
@@ -28,7 +33,7 @@ def _route_and_run(data: dict) -> dict:
             "routing_reason": decision.get("reason"),
             "output": {
                 "note": "Send the code to POST /v1/run to execute it. "
-                        "Execution is not triggered implicitly by routing.",
+                "Execution is not triggered implicitly by routing.",
             },
         }
 
@@ -39,5 +44,5 @@ def _route_and_run(data: dict) -> dict:
     }
 
 
-def handler(event: dict, context: object) -> dict:
+def handler(event: dict[str, Any], context: object) -> dict[str, Any]:
     return run_stage(event, required=["request"], fn=_route_and_run)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import boto3
 
@@ -14,7 +15,7 @@ def run_in_sandbox(
     prompt: str,
     model: str = "anthropic.claude-sonnet-4-5-20250929-v1:0",
     timeout: int = 600,
-) -> dict:
+) -> dict[str, Any]:
     """Run a Claude Agent SDK task in a Fargate Spot sandbox.
 
     The sandbox:
@@ -33,14 +34,16 @@ def run_in_sandbox(
     s3.put_object(
         Bucket=bucket,
         Key=f"{prefix}/input.json",
-        Body=json.dumps({
-            "task_id": task_id,
-            "repo": repo,
-            "branch": branch,
-            "prompt": prompt,
-            "model": model,
-            "timeout": timeout,
-        }),
+        Body=json.dumps(
+            {
+                "task_id": task_id,
+                "repo": repo,
+                "branch": branch,
+                "prompt": prompt,
+                "model": model,
+                "timeout": timeout,
+            }
+        ),
     )
 
     # Start task
@@ -49,14 +52,19 @@ def run_in_sandbox(
         taskDefinition="codeforge-sandbox:1",
         launchType="FARGATE_SPOT",
         overrides={
-            "containerOverrides": [{
-                "name": "sandbox",
-                "environment": [
-                    {"name": "TASK_INPUT_S3_URI", "value": f"s3://{bucket}/{prefix}/input.json"},
-                    {"name": "RESULT_S3_BUCKET", "value": bucket},
-                    {"name": "RESULT_S3_KEY", "value": f"{prefix}/result.json"},
-                ],
-            }],
+            "containerOverrides": [
+                {
+                    "name": "sandbox",
+                    "environment": [
+                        {
+                            "name": "TASK_INPUT_S3_URI",
+                            "value": f"s3://{bucket}/{prefix}/input.json",
+                        },
+                        {"name": "RESULT_S3_BUCKET", "value": bucket},
+                        {"name": "RESULT_S3_KEY", "value": f"{prefix}/result.json"},
+                    ],
+                }
+            ],
         },
     )
 
