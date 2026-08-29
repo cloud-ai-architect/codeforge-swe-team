@@ -60,6 +60,110 @@ def is_configured() -> bool:
     return bool(CLUSTER and TASK_DEFINITION and SUBNETS)
 
 
+def start(code: str, language: str = "python") -> str:
+    """Launch an isolated Fargate task for `code` and return its task id.
+
+    Starting and collecting are separate calls because a cold Fargate task
+    takes 30-60 seconds to pull its image and run, while API Gateway cuts an
+    integration off at 30. Waiting inline meant the caller always received a
+    503 even though the task had run correctly -- the work succeeded and the
+    result was thrown away.
+
+    The code is passed base64-encoded through the container command rather
+    than written to a shared volume, so nothing is persisted between runs.
+    """
+    if language != "python":
+        raise SandboxError(f"unsupported language: {language}")
+    if not is_configured():
+        raise SandboxNotConfiguredError(
+            "sandbox is not configured; set SANDBOX_CLUSTER, "
+            "SANDBOX_TASK_DEFINITION and SANDBOX_SUBNETS"
+        )
+
+    ecs = boto3.client("ecs", region_name=REGION)
+    encoded = base64.b64encode(code.encode("utf-8")).decode("ascii")
+
+    started = ecs.run_task(
+        cluster=CLUSTER,
+        taskDefinition=TASK_DEFINITION,
+        launchType="FARGATE",
+        count=1,
+        networkConfiguration={
+            "awsvpcConfiguration": {
+                "subnets": SUBNETS,
+                "securityGroups": SECURITY_GROUPS,
+                # No public IP: combined with a subnet that has no NAT, the
+                # task has no route off the VPC.
+                "assignPublicIp": "DISABLED",
+            }
+        },
+        overrides={
+            "containerOverrides": [
+                {
+                    "name": "runner",
+                    "command": [
+                        "python",
+                        "-c",
+                        "import base64,sys;exec(base64.b64decode(sys.argv[1]))",
+                        encoded,
+                    ],
+                }
+            ]
+        },
+    )
+
+    failures = started.get("failures") or []
+    if failures:
+        raise SandboxError(f"could not start sandbox task: {json.dumps(failures)}")
+
+    task_arn: str = started["tasks"][0]["taskArn"]
+    return task_arn.rsplit("/", 1)[-1]
+
+
+def collect(task_id: str) -> dict[str, Any]:
+    """Report on a task started by start(), without blocking.
+
+    Returns status "running" while the task is still going, so a caller can
+    poll. Once it has stopped, the exit code and captured output come back
+    with it.
+    """
+    if not is_configured():
+        raise SandboxNotConfiguredError("sandbox is not configured")
+
+    ecs = boto3.client("ecs", region_name=REGION)
+    described = ecs.describe_tasks(cluster=CLUSTER, tasks=[task_id])
+    tasks = described.get("tasks") or []
+    if not tasks:
+        raise SandboxError(f"no such sandbox task: {task_id}")
+
+    task = tasks[0]
+    status = task.get("lastStatus", "UNKNOWN")
+    if status != "STOPPED":
+        return {"task_id": task_id, "status": "running", "last_status": status}
+
+    containers = task.get("containers") or []
+    exit_code = containers[0].get("exitCode") if containers else None
+    logs = _fetch_logs(task_id) if LOG_GROUP else []
+
+    return {
+        "task_id": task_id,
+        "status": "complete",
+        "exit_code": exit_code,
+        "stopped_reason": task.get("stoppedReason", ""),
+        "output": "\n".join(logs)[:20000],
+        "isolation": _ISOLATION,
+    }
+
+
+_ISOLATION = {
+    "internet_route": False,
+    "egress": "ECR/CloudWatch VPC endpoints and S3 prefix list only",
+    "root_filesystem": "read-only",
+    "user": "non-root",
+    "task_role_permissions": "none",
+}
+
+
 def run(code: str, language: str = "python", timeout: int | None = None) -> dict[str, Any]:
     """Execute `code` in an isolated Fargate task and return its result.
 
@@ -123,13 +227,7 @@ def run(code: str, language: str = "python", timeout: int | None = None) -> dict
         "timed_out": exit_code is None,
         "stopped_reason": reason,
         "output": "\n".join(logs)[:20000],
-        "isolation": {
-            "internet_route": False,
-            "egress": "ECR/CloudWatch VPC endpoints and S3 prefix list only",
-            "root_filesystem": "read-only",
-            "user": "non-root",
-            "task_role_permissions": "none",
-        },
+        "isolation": _ISOLATION,
     }
 
 
