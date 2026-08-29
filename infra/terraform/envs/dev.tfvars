@@ -14,3 +14,8 @@ lambda_timeout_seconds = 300
 enable_cloudfront      = true
 log_retention_days     = 30
 monthly_budget_usd     = 50
+
+# The Fargate execution sandbox. Costs roughly $21/month for the three
+# interface VPC endpoints it needs to pull an image without a NAT gateway.
+# Everything else in this stack is idle-free.
+sandbox_enabled = true
